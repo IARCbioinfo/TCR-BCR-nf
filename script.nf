@@ -1,69 +1,143 @@
-#! /usr/bin/env nextflow
+#!/usr/bin/env nextflow
 
-// Copyright (C) 2017 IARC/WHO
+//help function for the tool
+def show_help (){
+  log.info IARC_Header()
+  log.info tool_header()
+    log.info"""
+    Usage:
 
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
+    The typical command for running the pipeline is as follows:
 
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
+    nextflow run iarcbioinfo/TCR-BCR-nf -singularity [OPTIONS]
 
-// You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-params.help = null
-
-log.info ""
-log.info "--------------------------------------------------------"
-log.info "  <PROGRAM_NAME> <VERSION>: <SHORT DESCRIPTION>         "
-log.info "--------------------------------------------------------"
-log.info "Copyright (C) IARC/WHO"
-log.info "This program comes with ABSOLUTELY NO WARRANTY; for details see LICENSE"
-log.info "This is free software, and you are welcome to redistribute it"
-log.info "under certain conditions; see LICENSE for details."
-log.info "--------------------------------------------------------"
-log.info ""
-
-if (params.help) {
-    log.info "--------------------------------------------------------"
-    log.info "  USAGE                                                 "
-    log.info "--------------------------------------------------------"
-    log.info ""
-    log.info "nextflow run iarcbioinfo/template-nf [-with-docker] [OPTIONS]"
-    log.info ""
-    log.info "Mandatory arguments:"
-    log.info "--<OPTION>                      <TYPE>                      <DESCRIPTION>"
-    log.info ""
-    log.info "Optional arguments:"
-    log.info "--<OPTION>                      <TYPE>                      <DESCRIPTION>"
-    log.info ""
-    log.info "Flags:"
-    log.info "--<FLAG>                                                    <DESCRIPTION>"
-    log.info ""
-    exit 0
-} else {
-/* Software information */
-log.info "help:                               ${params.help}"
+    Mandatory arguments:
+      --input_folder         [file] Folder with bam files to be processed
+      --IMGTC_fasta          [file] fasta file of reference genome from the international ImMunoGeneTics information system [file human_IMGT+C.fa from https://github.com/liulab-dfci/TRUST4]
+      --bcrtcr_fasta         [file] fasta file with reference BCR and TCR regions [see https://github.com/liulab-dfci/TRUST4 for generation]
+    Optional arguments:
+      --output_folder        [string] name of output folder
+      --cpu                  [Integer]  Number of CPUs[def:2]
+      --mem 		         [Integer] Max memory [def:8Gb]
+      --barcode              [flag] Run trust4 using a specific barcode (for single cell data only, usually BC for CellRanger output)
+      """.stripIndent()
 }
 
-str = Channel.from('hello', 'hola', 'bonjour', 'ciao')
 
-process printHello {
+//run trust4
+process trust {
+  cpus params.cpu
+  memory params.mem+'G'
+  tag { bam }
 
-    input:
-    val str
+  publishDir params.output_folder, mode: 'copy'
+  input:
+  path(bam)
+  path(bcrtcr_fasta)
+  path(IMGTC_fasta)
+  val(singlecell)
 
-    output:
-    stdout into result
-
-    shell:
-    '''
-    echo !{str}
-    '''
+  output:
+  tuple val(tumor_id), file("report-${tumor_id}-hla.json")
+  script:
+       """
+       run-trust4 -b {!bam}  -f !{bcrtcr_fasta} --ref !{IMGTC_fasta} !{singlecell}
+       """
 }
 
-result.println()
+
+// DSL2 workflow to run the processes
+workflow{
+  //display help information
+  if (params.help){ show_help(); exit 0;}
+  //display the header of the tool
+  log.info IARC_Header()
+  log.info tool_header()
+  //Check mandatory parameters
+  assert (params.input_folder != null) : "please specify --bam file"
+  assert (params.bcrtcr_fasta != null ) : "please specify --bcrtcr_fasta"
+  assert (params.IMGTC_fasta != null ) : "please specify --IMGTC_fasta"
+
+
+  //channels for reference genome
+  IMGTC_fasta = Channel.value(file(params.IMGTC_fasta)).ifEmpty{exit 1, "reference file not found: ${params.IMGTC_fasta}"}
+  bcrtcr_fasta = Channel.value(file(params.bcrtcr_fasta)).ifEmpty{exit 1, "reference file not found: ${params.bcrtcr_fasta}"}
+  
+  //channel with bam files
+  bams = Channel.fromPath(params.input_folder+"/*.bam")
+
+  //to add barcode ID; usually BC
+  if(params.barcode){
+    singlecell="--barcode "+params.barcode
+  }else{
+    singlecell=" "
+  }
+
+  print_params()
+
+  //run TCR and BCR genotyping
+  trust(bams,bcrtcr_fasta,IMGTC_fasta,singlecell)
+}
+
+
+// print the calling parameter to the log and a log file
+def print_params () {
+  //software versions
+  def software_versions = ['trust4'   : '1.1.0']
+  //we print the parameters
+  log.info "\n"
+  log.info "-\033[2m------------------Calling PARAMETERS--------------------\033[0m-"
+  log.info params.collect{ k,v -> "${k.padRight(18)}: $v"}.join("\n")
+  log.info "-\033[2m--------------------------------------------------------\033[0m-"
+  log.info "\n"
+  log.info "-\033[2m------------------Software versions--------------------\033[0m-"
+  log.info software_versions.collect{ k,v -> "${k.padRight(18)}: $v"}.join("\n")
+  log.info "-\033[2m--------------------------------------------------------\033[0m-"
+  log.info "\n"
+
+
+  //we print the parameters to a log file
+   def output_d = new File("${params.output_folder}/nf-pipeline_info/")
+   if (!output_d.exists()) {
+       output_d.mkdirs()
+   }
+   def output_tf = new File(output_d, "run_parameters_report.txt")
+   def  report_params="------------------Calling PARAMETERS--------------------\n"
+        report_params+= params.collect{ k,v -> "${k.padRight(18)}: $v"}.join("\n")
+        report_params+="\n--------------------------------------------------------\n"
+        report_params+="\n------------------NEXTFLOW Metadata--------------------\n"
+        report_params+="nextflow version : "+nextflow.version+"\n"
+        report_params+="nextflow build   : "+nextflow.build+"\n"
+        report_params+="Command line     : \n"+workflow.commandLine.split(" ").join(" \\\n")
+        report_params+="\n--------------------------------------------------------\n"
+        report_params+="-----------------Software versions--------------------\n"
+        report_params+=software_versions.collect{ k,v -> "${k.padRight(18)}: $v"}.join("\n")
+        report_params+="\n--------------------------------------------------------\n"
+
+   output_tf.withWriter { w -> w << report_params}
+}
+
+
+//this use ANSI colors to make a short tool description
+//useful url: http://www.lihaoyi.com/post/BuildyourownCommandLinewithANSIescapecodes.html
+def tool_header (){
+        return """
+        TCR-BCR-nf: Pipeline to genotype Tcell and Bcell receptors from RNA-seq data (${workflow.manifest.version})
+        """
+}
+
+//header for the IARC tools
+// the logo was generated using the following page
+// http://patorjk.com/software/taag  (ANSI logo generator)
+def IARC_Header (){
+     return  """
+#################################################################################
+# ██╗ █████╗ ██████╗  ██████╗██████╗ ██╗ ██████╗ ██╗███╗   ██╗███████╗ ██████╗  #
+# ██║██╔══██╗██╔══██╗██╔════╝██╔══██╗██║██╔═══██╗██║████╗  ██║██╔════╝██╔═══██╗ #
+# ██║███████║██████╔╝██║     ██████╔╝██║██║   ██║██║██╔██╗ ██║█████╗  ██║   ██║ #
+# ██║██╔══██║██╔══██╗██║     ██╔══██╗██║██║   ██║██║██║╚██╗██║██╔══╝  ██║   ██║ #
+# ██║██║  ██║██║  ██║╚██████╗██████╔╝██║╚██████╔╝██║██║ ╚████║██║     ╚██████╔╝ #
+# ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═════╝ ╚═╝ ╚═════╝ ╚═╝╚═╝  ╚═══╝╚═╝      ╚═════╝  #
+# Nextflow pipelines for cancer genomics.########################################
+"""
+}
