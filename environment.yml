@@ -1,6 +1,6 @@
-name: template-nf
+name: BCR-TCR-nf
 channels:
   - conda-forge
   - bioconda
 dependencies:
-  - samtools=1.8
+  - trust4=1.1.0
